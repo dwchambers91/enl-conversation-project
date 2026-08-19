@@ -1,0 +1,19 @@
+# RStudio / R working files — machine-specific clutter, not part of the project
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Quarto build scratch
+/.quarto/
+*_files/
+
+# OS clutter
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# NOTE: data/ and outputs/ are deliberately NOT ignored.
+# The data here is synthetic (no PHI), and a reviewer should be able to see
+# the practice dataset and the resulting chart without running any code.
+# In a REAL study repo, you would ignore data/ and never commit participant data.

@@ -1,0 +1,308 @@
+---
+title: "Facial Expression and Conversational Success in Autistic and Non-Autistic Adolescents"
+subtitle: "A reproducible analysis demo — Emotion & Neurodiversity Laboratory (portfolio piece)"
+author: "Doug Chambers"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-fold: true
+    theme: cosmo
+    fig-width: 8
+    fig-height: 5
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(broom)
+library(effsize)
+library(gt)
+
+dir.create("outputs", showWarnings = FALSE)
+
+# Regenerate the synthetic data if it isn't there yet, so this report is
+# reproducible from a clean checkout with a single `quarto render`.
+if (!file.exists("data/participants.csv")) {
+  source("R/00_generate_data.R")
+}
+```
+
+> **Data provenance & ethics.** All data in this report are **synthetic**, generated
+> by `R/00_generate_data.R`. There are no human subjects, no protected health
+> information, and no real clinical records. The workflow is written to mirror an
+> IRB-approved, de-identified pipeline: participants are referenced only by an
+> arbitrary study ID (`ENL-001`, …), and no identifying fields exist in the data.
+
+## Background
+
+The Emotion and Neurodiversity Laboratory studies the social and emotional
+experiences of neurodivergent youth. A current line of work asks whether **facial
+expressions and other non-verbal behaviors predict conversational success and
+satisfaction**, and whether those relationships differ between autistic and
+non-autistic adolescents.
+
+This report demonstrates the full data-processing chain for a study of that shape:
+raw behavioral coding + questionnaire responses → cleaning and scoring → statistical
+analysis → a poster-ready figure.
+
+**Research questions**
+
+1. Do autistic and non-autistic participants differ in facial-expression behavior
+   (smiling) and in self-reported conversation satisfaction?
+2. Do facial expressions and smile reciprocity predict conversational success, and
+   is that relationship moderated by group?
+
+---
+
+## 1. Load and inspect the raw data
+
+```{r load}
+participants <- read_csv("data/participants.csv", show_col_types = FALSE)
+csq_raw      <- read_csv("data/csq_items.csv", show_col_types = FALSE)
+
+glimpse(participants)
+```
+
+The questionnaire arrives "raw": wide, un-scored, with two reverse-coded items
+(`csq_3`, `csq_7`) and some missing responses.
+
+```{r peek-csq}
+head(csq_raw)
+```
+
+---
+
+## 2. Clean and score the questionnaire
+
+This is the core data-processing task: reverse-score the negatively-worded items,
+handle missing responses with a pro-rated mean, and compute a total
+Conversation Satisfaction score.
+
+```{r score}
+reverse_items <- c("csq_3", "csq_7")
+item_cols     <- paste0("csq_", 1:8)
+
+csq_scored <- csq_raw %>%
+  # 1. Reverse-code the negatively-worded items (Likert 1-5 -> 6 - x)
+  mutate(across(all_of(reverse_items), ~ 6 - .x)) %>%
+  # 2. Count how many of the 8 items each person answered
+  rowwise() %>%
+  mutate(
+    n_answered = sum(!is.na(c_across(all_of(item_cols)))),
+    # 3. Pro-rated total: mean of answered items x 8, but only if >= 6 answered
+    csq_total = if_else(
+      n_answered >= 6,
+      round(mean(c_across(all_of(item_cols)), na.rm = TRUE) * 8, 1),
+      NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  select(participant_id, n_answered, csq_total)
+
+# Simple internal-consistency check (Cronbach-style) on the scored items
+alpha_data <- csq_raw %>%
+  mutate(across(all_of(reverse_items), ~ 6 - .x)) %>%
+  select(all_of(item_cols))
+k <- ncol(alpha_data)
+item_vars <- apply(alpha_data, 2, var, na.rm = TRUE)
+total_var <- var(rowSums(alpha_data, na.rm = TRUE))
+cronbach_alpha <- (k / (k - 1)) * (1 - sum(item_vars) / total_var)
+
+cat(sprintf("Cronbach's alpha (8 CSQ items): %.2f\n", cronbach_alpha))
+```
+
+Merge the scored questionnaire back onto the participant-level behavioral data:
+
+```{r merge}
+dat <- participants %>%
+  left_join(csq_scored, by = "participant_id") %>%
+  mutate(group = factor(group, levels = c("non-autistic", "autistic")))
+
+# Export a clean analysis-ready file (and an Excel-friendly copy)
+write_csv(dat, "outputs/analysis_ready.csv")
+glimpse(dat)
+```
+
+---
+
+## 3. Descriptives by group
+
+```{r descriptives}
+dat %>%
+  group_by(group) %>%
+  summarise(
+    n = n(),
+    `Smiling (AU12), M` = mean(au12_lip_corner_puller),
+    `Smile reciprocity, M` = mean(smile_reciprocity),
+    `CSQ total, M` = mean(csq_total, na.rm = TRUE),
+    `Conversational success, M` = mean(conversational_success),
+    .groups = "drop"
+  ) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 2))) %>%
+  gt() %>%
+  tab_header(title = "Table 1. Descriptive statistics by group") %>%
+  gtsave("outputs/table1_descriptives.html")
+```
+
+```{r descriptives-show}
+#| echo: false
+dat %>%
+  group_by(group) %>%
+  summarise(
+    n = n(),
+    `Smiling (AU12)` = round(mean(au12_lip_corner_puller), 2),
+    `Smile reciprocity` = round(mean(smile_reciprocity), 2),
+    `CSQ total` = round(mean(csq_total, na.rm = TRUE), 2),
+    `Conv. success` = round(mean(conversational_success), 2),
+    .groups = "drop"
+  )
+```
+
+---
+
+## 4. Group comparisons
+
+Do the groups differ in smiling and in conversation satisfaction? We report Welch's
+*t*-tests with **Cohen's *d*** effect sizes (effect size, not just *p*).
+
+```{r ttests}
+compare_group <- function(var, label) {
+  f <- reformulate("group", response = var)
+  tt <- t.test(f, data = dat)
+  d  <- effsize::cohen.d(dat[[var]], dat$group, na.rm = TRUE)
+  tibble(
+    Outcome = label,
+    `M (non-autistic)` = round(tt$estimate[1], 2),
+    `M (autistic)`     = round(tt$estimate[2], 2),
+    t  = round(tt$statistic, 2),
+    df = round(tt$parameter, 1),
+    p  = signif(tt$p.value, 3),
+    `Cohen's d` = round(d$estimate, 2)
+  )
+}
+
+bind_rows(
+  compare_group("au12_lip_corner_puller", "Smiling (AU12)"),
+  compare_group("conversational_success", "Conversational success"),
+  compare_group("csq_total",              "CSQ total")
+)
+```
+
+---
+
+## 5. Does non-verbal behavior predict conversational success?
+
+A linear model predicting conversational success from smiling and smile
+reciprocity, with a **group interaction** to test whether the payoff of smiling
+differs by group.
+
+```{r regression}
+m <- lm(
+  conversational_success ~ scale(au12_lip_corner_puller) * group +
+    scale(smile_reciprocity) + scale(au04_brow_lowerer),
+  data = dat
+)
+
+tidy(m) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
+  rename(term = term, estimate = estimate, SE = std.error,
+         t = statistic, p = p.value)
+
+cat(sprintf("\nModel R-squared: %.2f (adj. %.2f)\n",
+            summary(m)$r.squared, summary(m)$adj.r.squared))
+```
+
+**Reading the model.** Smiling and smile reciprocity are positive predictors of
+conversational success; the `scale(au12...):groupautistic` term is the interaction —
+a negative value means smiling is associated with a somewhat smaller gain in
+conversational success in the autistic group (a controlled, synthetic effect built
+into the data generator, recovered here by the analysis).
+
+---
+
+## 6. Poster-ready figure
+
+```{r figure}
+#| fig-width: 8.5
+#| fig-height: 5.5
+theme_poster <- theme_minimal(base_size = 14) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(color = "grey35"),
+    legend.position = "top",
+    panel.grid.minor = element_blank()
+  )
+
+group_cols <- c("non-autistic" = "#2C7FB8", "autistic" = "#D95F0E")
+
+p <- ggplot(dat, aes(au12_lip_corner_puller, conversational_success, color = group)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1.1) +
+  scale_color_manual(values = group_cols, name = NULL) +
+  labs(
+    title = "Smiling predicts conversational success",
+    subtitle = "Association is present in both groups, with a steeper slope for non-autistic adolescents (synthetic data)",
+    x = "Smiling intensity (facial action unit AU12, mean)",
+    y = "Conversational success (0–100)"
+  ) +
+  theme_poster
+
+p
+ggsave("outputs/figure_conversational_success.png", p,
+       width = 8.5, height = 5.5, dpi = 300)
+```
+
+The figure is saved at 300 dpi to `outputs/figure_conversational_success.png`,
+ready to drop into a conference poster.
+
+---
+
+## 7. Mini literature review
+
+A brief review situating this analysis within the ENL / Center for Autism Research
+line of work on facial affect and social-emotional processing in autism.
+
+- **Zampella, C. J., Bennetto, L., & Herrington, J. D. (2020).** Computer vision
+  analysis of reduced interpersonal affect coordination in youth with autism
+  spectrum disorder. *Autism Research, 13*(12), 2133–2142.
+  <https://doi.org/10.1002/aur.2334>
+  — The direct precedent for this design: automated facial coding shows that
+  *interpersonal affect coordination* (aligning the form and timing of facial
+  affect with a partner) is reduced in autistic youth. Motivates using smiling and
+  **smile reciprocity** as predictors of conversational success.
+
+- **Herrington, J. D., et al. (2016).** Anxiety and social deficits have distinct
+  relationships with amygdala function in autism spectrum disorder. *Social
+  Cognitive and Affective Neuroscience, 11*(6), 907–914.
+  <https://doi.org/10.1093/scan/scw015>
+  — Establishes that social and emotional processes in autism are separable rather
+  than unitary, supporting analyses that model group differences rather than
+  assuming a single "autism effect."
+
+- **Mazefsky, C. A., Herrington, J., et al. (2013).** The role of emotion
+  regulation in autism spectrum disorder. *Journal of the American Academy of Child
+  & Adolescent Psychiatry, 52*(7), 679–688.
+  <https://doi.org/10.1016/j.jaac.2013.05.006>
+  — Frames why the emotional/affective side of social interaction is central to
+  outcomes for autistic youth, motivating the satisfaction construct measured here.
+
+- **Baltrušaitis, T., Zadeh, A., Lim, Y. C., & Morency, L.-P. (2018).** OpenFace
+  2.0: Facial behavior analysis toolkit. *IEEE FG 2018.*
+  — Methods reference for the automated facial action-unit extraction (AU06, AU12,
+  AU04) that the synthetic variables in this demo emulate.
+
+> These citations were verified against public sources for this demo. For a live
+> submission, confirm each against the lab's current reference manager and add any
+> in-press work.
+
+---
+
+## Session info
+
+```{r session}
+sessionInfo()
+```
