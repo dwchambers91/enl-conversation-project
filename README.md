@@ -5,6 +5,7 @@ small **synthetic** dataset modeled on the kind of research done at CHOP's Cente
 Autism Research studying facial expression and conversational behavior in autistic
 and non-autistic adolescents.
 
+<<<<<<< HEAD
 I built this to get hands-on with the everyday data tasks a clinical research role
 involves: loading a data file, checking it, computing summary statistics, comparing
 groups, and producing a chart.
