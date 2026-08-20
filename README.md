@@ -42,7 +42,7 @@ to check my analysis was working).
 
 ## How to reproduce
 
-With [R] installed, open `practice_analysis.R` in
+With R installed, open `practice_analysis.R` in
 RStudio and run it top to bottom. It uses only base R, no extra packages needed.
 (Update the file path at the top to wherever you saved the folder.)
 
